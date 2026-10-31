@@ -102,7 +102,6 @@
     $('#explore-tip').style.opacity = '1';
     tipTimer = setTimeout(() => $('#explore-tip').style.opacity = '0', 14000);
 
-    for (const room of Object.values(rooms)) { const image = new Image(); image.src = `../assets/${room.image}.webp`; }
   }
   function objective() {
     if (!solved('clock')) return 'Время здесь остановилось. Найдите мгновение, с которого всё началось.';
@@ -288,7 +287,7 @@
       this.timer=setInterval(()=>{if(this.engine.active){this.elapsed+=.12;this.engine.update(this.listener(),{x:0,y:0,z:-1},state.room,this.elapsed);}},120);
     }
     listener(){const a={hall:[0,1.64,0],library:[-12,1.64,0],dining:[12,1.64,0],cellar:[0,-.76,-20]}[state.room];return {x:a[0],y:a[1],z:a[2]};}
-    enable(){this.engine.setEnabled(true);this.engine.start();this.engine.sync(state.solved);}
+    enable(){this.engine.enabled=true;this.engine.start();this.engine.sync(state.solved);}
     disable(){this.engine.setEnabled(false);}
     touch(){this.engine.paper(this.listener());}
     creak(){this.engine.openDoor(this.listener());}
@@ -380,4 +379,52 @@
 
   setInterval(()=>{if(sessionStart)checkpoint();},15000);
   refreshWelcome();showScreen('welcome');
+  // Keep decoded images alive and wait for every scene, font and sound before entry.
+  const preloadedImages=new Map();
+  let loadingAttempt=0;
+  async function prepareAssets() {
+    const attempt=++loadingAttempt,loader=$('#asset-loader');
+    loader.hidden=false;loader.setAttribute('aria-busy','true');$('#app').inert=true;
+    $('#loading-title').textContent='Дом просыпается…';
+    $('#loading-status').textContent='Готовим комнаты, звуки и свет.';
+    $('#loading-retry').hidden=true;
+    let timeout;
+    try {
+      if(sound){clearInterval(sound.timer);sound.engine.destroy();}
+      sound=new ManorAudio();
+      const images=['exterior',...Object.values(rooms).map(room=>room.image)];
+      const total=images.length+1+(sound.engine.samples?.length||0);let completed=0;
+      const progress=()=>{if(attempt!==loadingAttempt)return;const percent=Math.floor(++completed/total*100);$('#loading-progress').value=percent;$('#loading-percent').textContent=percent+'%';};
+      $('#loading-progress').value=0;$('#loading-percent').textContent='0%';
+      const imageTasks=images.map(name=>new Promise((resolve,reject)=>{
+        const image=new Image();image.decoding='async';preloadedImages.set(name,image);
+        image.onload=async()=>{try{if(image.decode)await image.decode();progress();resolve();}catch(error){reject(error);}};
+        image.onerror=()=>reject(new Error('Image failed to load'));
+        image.src=`../assets/${name}.webp`;
+      }));
+      const fontTasks=document.fonts?[
+        'italic 400 24px "Cormorant Garamond"','italic 500 24px "Cormorant Garamond"',
+        '400 24px "Cormorant Garamond"','500 24px "Cormorant Garamond"','600 24px "Cormorant Garamond"',
+        '400 14px Manrope','500 14px Manrope','600 14px Manrope','700 14px Manrope'
+      ].map(font=>document.fonts.load(font,'Дом, который помнит ABC 123')):[];
+      const fontReady=Promise.all(fontTasks).then(progress);
+      const audioReady=sound.engine.ready?sound.engine.ready(progress):Promise.resolve();
+      await Promise.race([
+        Promise.all([...imageTasks,fontReady,audioReady]),
+        new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Loading timed out')),45000);})
+      ]);
+      if(attempt!==loadingAttempt)return;
+      loader.hidden=true;loader.setAttribute('aria-busy','false');$('#app').inert=false;
+    } catch {
+      if(attempt!==loadingAttempt)return;
+      // Ignore completions from a timed-out attempt while the error is displayed.
+      loadingAttempt++;
+      loader.setAttribute('aria-busy','false');
+      $('#loading-title').textContent='Дом ещё не готов';
+      $('#loading-status').textContent='Не удалось загрузить все материалы. Проверьте соединение и попробуйте снова.';
+      $('#loading-retry').hidden=false;
+    } finally {clearTimeout(timeout);}
+  }
+  $('#loading-retry').addEventListener('click',prepareAssets);
+  prepareAssets();
 })();
